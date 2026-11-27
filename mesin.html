@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mesin Presensi – SICOBA</title>
+<meta name="theme-color" content="#0e5a43">
+<link rel="manifest" href="manifest.json">
+<!--
+KONTRAK API (Google Apps Script) yang dipakai halaman ini:
+ GET  ?action=waktu  -> {"status":"success","epoch":<ms sejak 1970>}   (sinkron jam server; opsional, jika gagal memakai jam perangkat)
+ POST (body JSON, Content-Type text/plain agar tanpa preflight CORS)
+   {action:"presensi_guru", client_id, tanggal:"dd-mm-yyyy", niy, nama, jenis_log:"MASUK|PULANG|IZIN_KELUAR|KEMBALI_DINAS",
+    waktu_qr:"hh:mm:ss", waktu_mesin:"hh:mm:ss", selisih_detik:<int>, keterangan}
+   -> {"status":"success","message":"..."}  atau  {"status":"error","message":"..."}
+ client_id unik per scan: gunakan untuk mencegah baris ganda jika antrian offline terkirim ulang.
+-->
+<style>
+:root{--bg:#f2f5f1;--card:#fff;--ink:#12251d;--mute:#56685f;--line:#d5ded8;--green:#0e5a43;--gold:#c9a227;--ok:#1b7f4f;--warn:#9a6a00;--err:#b3261e;
+font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1612;--card:#15231c;--ink:#e6efe9;--mute:#98aca1;--line:#27392f;--green:#36b583;--ok:#1b7f4f;--warn:#a87400}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);min-height:100vh;padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+header{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--card);border-bottom:1px solid var(--line)}
+header a{color:var(--green);font-weight:600;text-decoration:none}
+header strong{font-size:1.05rem}
+.badges{display:flex;gap:6px;flex-wrap:wrap}
+.badges span{font-size:.75rem;padding:3px 9px;border-radius:99px;border:1px solid var(--line);color:var(--mute)}
+.badges .good{color:var(--ok);border-color:var(--ok)}
+.badges .bad{color:var(--err);border-color:var(--err)}
+.badges .amb{color:var(--warn);border-color:var(--warn)}
+main{display:grid;gap:16px;padding:16px;max-width:1200px;margin:0 auto}
+@media(min-width:900px){main{grid-template-columns:1.15fr 1fr;align-items:start}}
+.scan{position:relative;background:#000;border-radius:12px;overflow:hidden;min-height:280px}
+#reader{width:100%}
+#camMsg{padding:16px;color:#f3d9d6;font-size:.95rem}
+#camMsg:empty{display:none}
+.hasil{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;gap:6px;padding:24px;color:#fff;text-align:center}
+.hasil[hidden]{display:none}
+.hasil.ok{background:var(--ok)}.hasil.warn{background:var(--warn)}.hasil.err{background:var(--err)}
+.hasil h2{margin:0;font-size:clamp(1.4rem,4vw,2.2rem)}
+.hasil .nm{font-size:clamp(1.2rem,3.5vw,1.8rem);font-weight:700}
+.hasil p{margin:0;font-size:1rem;line-height:1.4}
+.panel{display:grid;gap:14px}
+.clock{padding:4px 2px}
+#tgl{color:var(--mute);font-size:1rem}
+#jam{font-size:clamp(3rem,9vw,5.5rem);font-weight:800;line-height:1;letter-spacing:-.03em;font-variant-numeric:tabular-nums;color:var(--green)}
+.modes{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.modes button{min-height:68px;padding:10px;border:2px solid var(--line);border-bottom:5px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);font:inherit;font-weight:700;font-size:1rem;cursor:pointer}
+.modes button[aria-checked=true]{background:var(--green);border-color:var(--green);border-bottom-color:var(--gold);color:#fff}
+.modes small{display:block;font-weight:400;font-size:.78rem;opacity:.85}
+input,select{width:100%;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font:inherit}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+#ketWrap[hidden]{display:none}
+ol{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+ol:empty::before{content:"Belum ada pemindaian. Arahkan QR dari HP guru ke kamera.";color:var(--mute);font-size:.9rem}
+li{display:grid;grid-template-columns:5.2rem 1fr;gap:10px;padding:9px 12px;background:var(--card);border:1px solid var(--line);border-left:5px solid var(--ok);border-radius:8px;font-size:.9rem}
+li.warn{border-left-color:var(--warn)}li.err{border-left-color:var(--err)}
+li time{font-variant-numeric:tabular-nums;color:var(--mute)}
+li b{display:block}
+li span{color:var(--mute)}
+</style>
+</head>
+<body>
+<header>
+  <a href="index.html">Kembali ke portal</a>
+  <strong>Mesin Presensi Guru</strong>
+  <div class="badges"><span id="bSync">Jam perangkat</span><span id="bNet">Jaringan</span><span id="bQ" hidden></span></div>
+</header>
+<main>
+  <section class="scan" aria-label="Pemindai QR">
+    <div id="reader"></div>
+    <div id="camMsg" role="alert">Menyiapkan kamera…</div>
+    <div id="hasil" class="hasil" role="status" aria-live="assertive" hidden></div>
+  </section>
+  <section class="panel">
+    <div class="clock"><div id="tgl"></div><div id="jam">--:--:--</div></div>
+    <div class="modes" role="radiogroup" aria-label="Jenis presensi">
+      <button type="button" role="radio" data-mode="MASUK">Masuk kerja</button>
+      <button type="button" role="radio" data-mode="PULANG">Pulang kerja</button>
+      <button type="button" role="radio" data-mode="IZIN_KELUAR">Izin dinas luar<small>keluar sekolah</small></button>
+      <button type="button" role="radio" data-mode="KEMBALI_DINAS">Selesai dinas luar<small>kembali ke sekolah</small></button>
+    </div>
+    <div id="ketWrap" hidden><input id="ket" type="text" maxlength="120" placeholder="Nomor surat tugas atau keterangan (opsional)" aria-label="Keterangan dinas luar"></div>
+    <select id="camSel" aria-label="Pilih kamera" hidden></select>
+    <ol id="log" aria-label="Riwayat pemindaian"></ol>
+  </section>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js" onerror="this.onerror=null;var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js';s.onload=init;document.head.appendChild(s)"></script>
+<script>
+const API_URL='https://script.google.com/macros/s/AKfycbwmPW04DDR6oNi6DqBQvdh9Br0ofdwj36iGr-qBUbY2bYxUOLuYG3wXwX6RSvlZ3twYbw/exec';
+const TZ='Asia/Jakarta',MAX_DELTA=60,DUP_MS=30000;
+const JENIS={MASUK:'Masuk',PULANG:'Pulang',IZIN_KELUAR:'Izin keluar',KEMBALI_DINAS:'Kembali dinas'};
+const $=id=>document.getElementById(id);
+const pad=n=>String(n).padStart(2,'0');
+let offset=0,synced=false,mode=localStorage.getItem('sicoba_mode')||'MASUK',scanner,busy=false,started=false;
+const last={},logs=[];
+
+/* ---------- Waktu (WIB, disinkronkan ke server bila tersedia) ---------- */
+const now=()=>Date.now()+offset;
+const fmt=new Intl.DateTimeFormat('en-GB',{timeZone:TZ,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+function wib(ms){const o={};fmt.formatToParts(ms).forEach(p=>o[p.type]=p.value);if(o.hour==='24')o.hour='00';return o;}
+const tglFmt=new Intl.DateTimeFormat('id-ID',{timeZone:TZ,weekday:'long',day:'numeric',month:'long',year:'numeric'});
+function tick(){const n=wib(now());$('jam').textContent=`${n.hour}:${n.minute}:${n.second}`;$('tgl').textContent=tglFmt.format(now());}
+async function sinkron(){
+  try{
+    const t0=Date.now(),r=await fetch(API_URL+'?action=waktu',{cache:'no-store'}),j=await r.json(),t1=Date.now();
+    const s=typeof j.epoch==='number'?j.epoch:Date.parse(j.waktu||j.now||j.timestamp);
+    if(!s||isNaN(s))throw 0;
+    offset=s-(t0+t1)/2;synced=true;
+  }catch(e){}
+  const b=$('bSync');b.textContent=synced?'Jam server':'Jam perangkat';b.className=synced?'good':'amb';
+}
+
+/* ---------- Parsing & validasi QR ---------- */
+function parseQR(txt){
+  let s=txt.trim();
+  try{s=new TextDecoder().decode(Uint8Array.from(atob(s),c=>c.charCodeAt(0)));}catch(e){}
+  const p=s.split('|');if(p.length!==4)return null;
+  const [niy,nama,tgl,jam]=p.map(x=>x.trim());
+  const t=tgl.split(':').map(Number),j=jam.split(':').map(Number);
+  if(!niy||t.length!==3||j.length!==3||[...t,...j].some(isNaN))return null;
+  const y=t[2]<100?2000+t[2]:t[2];
+  return{niy,nama,tgl:`${pad(t[0])}:${pad(t[1])}:${pad(y%100)}`,jam:j.map(pad).join(':'),epoch:Date.UTC(y,t[1]-1,t[0],j[0],j[1],j[2])-7*36e5};
+}
+async function proses(text){
+  const p=parseQR(text);
+  if(!p)return{s:'err',t:'QR tidak dikenali',m:'Gunakan QR dari menu QR Presensi Saya di aplikasi guru.'};
+  const n=wib(now());
+  if(p.tgl!==`${n.day}:${n.month}:${n.year.slice(2)}`)return{s:'err',t:'Tanggal QR tidak sesuai',nama:p.nama,m:'Periksa tanggal dan jam di HP Anda, lalu segarkan QR.'};
+  const delta=Math.round(Math.abs(now()-p.epoch)/1000);
+  if(delta>MAX_DELTA)return{s:'err',t:'QR Code kedaluwarsa',nama:p.nama,m:`Selisih ${delta} detik (maks. ${MAX_DELTA}). QR Code Kedaluwarsa / Jam HP Tidak Sinkron, Silakan Refresh QR Anda.`};
+  const key=p.niy+mode;
+  if(last[key]&&now()-last[key]<DUP_MS)return{s:'warn',t:'Sudah tercatat',nama:p.nama,m:'Presensi yang sama baru saja diterima.'};
+  last[key]=now();
+  const rec={client_id:(crypto.randomUUID?crypto.randomUUID():Date.now()+'-'+Math.random()),tanggal:`${n.day}-${n.month}-${n.year}`,niy:p.niy,nama:p.nama,jenis_log:mode,waktu_qr:p.jam,waktu_mesin:`${n.hour}:${n.minute}:${n.second}`,selisih_detik:delta,keterangan:$('ket').value.trim()};
+  $('ket').value='';
+  const det=`${JENIS[mode]} pukul ${rec.waktu_mesin} (selisih ${delta} dtk)`;
+  try{
+    await kirim(rec);
+    return{s:'ok',t:'Presensi diterima',nama:p.nama,m:det};
+  }catch(e){
+    if(e.net){antri(rec);return{s:'warn',t:'Disimpan di mesin',nama:p.nama,m:det+'. Akan dikirim saat koneksi pulih.'};}
+    delete last[key];
+    return{s:'err',t:'Ditolak server',nama:p.nama,m:e.message};
+  }
+}
+
+/* ---------- Kirim ke Apps Script + antrian offline ---------- */
+async function kirim(rec){
+  const ac=new AbortController(),to=setTimeout(()=>ac.abort(),10000);
+  let j;
+  try{
+    const r=await fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'presensi_guru',...rec}),signal:ac.signal});
+    j=await r.json();
+  }catch(e){const x=new Error('Tidak ada koneksi');x.net=true;throw x;}
+  finally{clearTimeout(to);}
+  if(j.status!=='success'&&j.status!=='ok')throw new Error(j.message||'Data tidak dapat disimpan');
+  return j;
+}
+const QK='sicoba_mesin_queue';
+const getQ=()=>{try{return JSON.parse(localStorage.getItem(QK)||'[]');}catch(e){return[];}};
+function antri(rec){const a=getQ();a.push(rec);localStorage.setItem(QK,JSON.stringify(a));badgeQ();}
+function badgeQ(){const n=getQ().length,b=$('bQ');b.hidden=!n;b.textContent=`${n} menunggu kirim`;b.className='amb';}
+let flushing=false;
+async function flush(){
+  if(flushing||!navigator.onLine)return;flushing=true;
+  let a=getQ();
+  while(a.length){
+    try{await kirim(a[0]);}
+    catch(e){if(e.net)break;tambahLog({s:'err',nama:a[0].nama,jam:a[0].waktu_mesin,m:'Antrian ditolak: '+e.message});}
+    a.shift();localStorage.setItem(QK,JSON.stringify(a));
+  }
+  flushing=false;badgeQ();
+}
+
+/* ---------- Tampilan hasil ---------- */
+let actx;document.addEventListener('click',()=>{try{actx=actx||new AudioContext();actx.resume();}catch(e){}},{once:true});
+function bip(ok){try{const o=actx.createOscillator(),g=actx.createGain();o.connect(g);g.connect(actx.destination);o.frequency.value=ok?880:220;g.gain.value=.15;o.start();o.stop(actx.currentTime+(ok?.15:.4));}catch(e){}}
+function tampil(r){
+  const h=$('hasil');h.className='hasil '+r.s;h.replaceChildren();
+  const add=(tag,cls,txt)=>{const e=document.createElement(tag);if(cls)e.className=cls;e.textContent=txt;h.appendChild(e);};
+  add('h2','',r.t);if(r.nama)add('div','nm',r.nama);add('p','',r.m);
+  h.hidden=false;bip(r.s==='ok');
+  tambahLog({s:r.s,nama:r.nama||r.t,jam:$('jam').textContent,m:r.nama?`${r.t}. ${r.m}`:r.m});
+}
+function tambahLog(l){
+  logs.unshift(l);logs.length=Math.min(logs.length,8);
+  $('log').replaceChildren(...logs.map(x=>{
+    const li=document.createElement('li');li.className=x.s;
+    const t=document.createElement('time');t.textContent=x.jam;
+    const d=document.createElement('div'),b=document.createElement('b'),s=document.createElement('span');
+    b.textContent=x.nama;s.textContent=x.m;d.append(b,s);li.append(t,d);return li;
+  }));
+}
+
+/* ---------- Pemindai kamera ---------- */
+async function onScan(text){
+  if(busy)return;busy=true;
+  try{scanner.pause(true);}catch(e){}
+  let r;
+  try{r=await proses(text);}catch(e){r={s:'err',t:'Terjadi kesalahan',m:e.message};}
+  tampil(r);
+  setTimeout(()=>{$('hasil').hidden=true;try{scanner.resume();}catch(e){}busy=false;},r.s==='ok'?2500:3500);
+}
+async function mulai(id){
+  try{
+    if(scanner&&scanner.isScanning)await scanner.stop();
+    scanner=scanner||new Html5Qrcode('reader',{formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE],verbose:false});
+    await scanner.start(id,{fps:10,qrbox:(w,h)=>{const m=Math.floor(Math.min(w,h)*.7);return{width:m,height:m};}},onScan,()=>{});
+    $('camMsg').textContent='';localStorage.setItem('sicoba_cam',id);
+  }catch(e){$('camMsg').textContent='Kamera tidak dapat dibuka: '+(e.message||e)+'. Izinkan akses kamera di browser, lalu muat ulang halaman.';}
+}
+async function init(){
+  if(started||!window.Html5Qrcode)return;started=true;
+  try{
+    const cams=await Html5Qrcode.getCameras();
+    if(!cams.length)throw new Error('Tidak ada kamera');
+    const sel=$('camSel');
+    cams.forEach((c,i)=>sel.add(new Option(c.label||('Kamera '+(i+1)),c.id)));
+    sel.hidden=cams.length<2;
+    const saved=localStorage.getItem('sicoba_cam');
+    const pick=cams.find(c=>c.id===saved)||cams.find(c=>/back|rear|environment|belakang/i.test(c.label))||cams[0];
+    sel.value=pick.id;sel.onchange=()=>mulai(sel.value);
+    mulai(pick.id);
+  }catch(e){$('camMsg').textContent='Kamera tidak dapat dibuka: '+(e.message||e)+'. Izinkan akses kamera, lalu muat ulang halaman.';}
+}
+
+/* ---------- Mode, jaringan, layar tetap menyala ---------- */
+function setMode(m){
+  mode=m;localStorage.setItem('sicoba_mode',m);
+  document.querySelectorAll('.modes button').forEach(b=>b.setAttribute('aria-checked',b.dataset.mode===m));
+  $('ketWrap').hidden=!(m==='IZIN_KELUAR'||m==='KEMBALI_DINAS');
+}
+document.querySelectorAll('.modes button').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
+setMode(JENIS[mode]?mode:'MASUK');
+function net(){const b=$('bNet'),o=navigator.onLine;b.textContent=o?'Terhubung':'Offline';b.className=o?'good':'bad';if(o){flush();sinkron();}}
+addEventListener('online',net);addEventListener('offline',net);
+async function wake(){try{await navigator.wakeLock.request('screen');}catch(e){}}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)wake();});
+
+tick();setInterval(tick,250);
+net();badgeQ();wake();
+setInterval(sinkron,6e5);setInterval(flush,3e4);
+addEventListener('load',()=>{init();setTimeout(()=>{if(!started)$('camMsg').textContent='Pustaka pemindai gagal dimuat. Periksa koneksi internet lalu muat ulang halaman.';},8000);});
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+</body>
+</html>
