@@ -12,7 +12,8 @@ KONTRAK API (Google Apps Script) yang dipakai halaman ini:
  POST (body JSON, Content-Type text/plain agar tanpa preflight CORS)
    {action:"presensi_guru", client_id, tanggal:"dd-mm-yyyy", niy, nama, jenis_log:"MASUK|PULANG|IZIN_KELUAR|KEMBALI_DINAS",
     waktu_qr:"hh:mm:ss", waktu_mesin:"hh:mm:ss", selisih_detik:<int>, keterangan}
-   -> {"status":"success","message":"..."}  atau  {"status":"error","message":"..."}
+   + key (kunci mesin, disimpan di HP mesin)
+   -> {"status":"success","message":"..."}  atau  {"status":"error","message":"...","kode":"auth"}
  client_id unik per scan: gunakan untuk mencegah baris ganda jika antrian offline terkirim ulang.
 -->
 <style>
@@ -27,6 +28,7 @@ header a{color:var(--green);font-weight:600;text-decoration:none}
 header strong{font-size:1.05rem}
 .badges{display:flex;gap:6px;flex-wrap:wrap}
 .badges span{font-size:.75rem;padding:3px 9px;border-radius:99px;border:1px solid var(--line);color:var(--mute)}
+.badges button{font:inherit;font-size:.75rem;padding:3px 9px;border-radius:99px;border:1px solid var(--line);background:none;color:var(--mute);cursor:pointer}
 .badges .good{color:var(--ok);border-color:var(--ok)}
 .badges .bad{color:var(--err);border-color:var(--err)}
 .badges .amb{color:var(--warn);border-color:var(--warn)}
@@ -66,7 +68,7 @@ li span{color:var(--mute)}
 <header>
   <a href="index.html">Kembali ke portal</a>
   <strong>Mesin Presensi Guru</strong>
-  <div class="badges"><span id="bSync">Jam perangkat</span><span id="bNet">Jaringan</span><span id="bQ" hidden></span></div>
+  <div class="badges"><span id="bSync">Jam perangkat</span><span id="bNet">Jaringan</span><span id="bQ" hidden></span><button id="btnKunci" type="button">Kunci mesin</button></div>
 </header>
 <main>
   <section class="scan" aria-label="Pemindai QR">
@@ -141,7 +143,7 @@ async function proses(text){
     await kirim(rec);
     return{s:'ok',t:'Presensi diterima',nama:p.nama,m:det};
   }catch(e){
-    if(e.net){antri(rec);return{s:'warn',t:'Disimpan di mesin',nama:p.nama,m:det+'. Akan dikirim saat koneksi pulih.'};}
+    if(e.net||e.auth){antri(rec);return{s:'warn',t:'Disimpan di mesin',nama:p.nama,m:det+(e.auth?'. Kunci mesin salah, hubungi admin.':'. Akan dikirim saat koneksi pulih.')};}
     delete last[key];
     return{s:'err',t:'Ditolak server',nama:p.nama,m:e.message};
   }
@@ -152,10 +154,11 @@ async function kirim(rec){
   const ac=new AbortController(),to=setTimeout(()=>ac.abort(),10000);
   let j;
   try{
-    const r=await fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'presensi_guru',...rec}),signal:ac.signal});
+    const r=await fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'presensi_guru',key:localStorage.getItem('sicoba_mesin_key')||'',...rec}),signal:ac.signal});
     j=await r.json();
   }catch(e){const x=new Error('Tidak ada koneksi');x.net=true;throw x;}
   finally{clearTimeout(to);}
+  if(j.kode==='auth'){const x=new Error(j.message);x.auth=true;throw x;}
   if(j.status!=='success'&&j.status!=='ok')throw new Error(j.message||'Data tidak dapat disimpan');
   return j;
 }
@@ -169,7 +172,7 @@ async function flush(){
   let a=getQ();
   while(a.length){
     try{await kirim(a[0]);}
-    catch(e){if(e.net)break;tambahLog({s:'err',nama:a[0].nama,jam:a[0].waktu_mesin,m:'Antrian ditolak: '+e.message});}
+    catch(e){if(e.net||e.auth)break;tambahLog({s:'err',nama:a[0].nama,jam:a[0].waktu_mesin,m:'Antrian ditolak: '+e.message});}
     a.shift();localStorage.setItem(QK,JSON.stringify(a));
   }
   flushing=false;badgeQ();
@@ -235,6 +238,7 @@ function setMode(m){
 }
 document.querySelectorAll('.modes button').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
 setMode(JENIS[mode]?mode:'MASUK');
+$('btnKunci').onclick=()=>{const k=prompt('Masukkan kunci mesin (sama dengan MESIN_KEY di Apps Script):',localStorage.getItem('sicoba_mesin_key')||'');if(k!==null){localStorage.setItem('sicoba_mesin_key',k.trim());flush();}};
 function net(){const b=$('bNet'),o=navigator.onLine;b.textContent=o?'Terhubung':'Offline';b.className=o?'good':'bad';if(o){flush();sinkron();}}
 addEventListener('online',net);addEventListener('offline',net);
 async function wake(){try{await navigator.wakeLock.request('screen');}catch(e){}}
