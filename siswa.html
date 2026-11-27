@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Siswa – SICOBA</title>
+<meta name="theme-color" content="#0e5a43">
+<link rel="manifest" href="manifest.json">
+<!--
+KONTRAK API (POST JSON, Content-Type text/plain). Respons: {status:"success"|"error", message, ...}
+ login_siswa    {nis,pin} -> {nama, kelas, lat_rumah, lng_rumah}
+ log_monitoring {nis,nama,jenis_peringatan:"TIDUR_MALAM_2200|LUAR_AREA_SEKOLAH",koordinat:"lat, lng",keterangan,client_id}
+-->
+<style>
+:root{--bg:#f2f5f1;--card:#fff;--ink:#12251d;--mute:#56685f;--line:#d5ded8;--green:#0e5a43;--gold:#c9a227;--ok:#1b7f4f;--warn:#9a6a00;--err:#b3261e;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1612;--card:#15231c;--ink:#e6efe9;--mute:#98aca1;--line:#27392f;--green:#36b583}}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);min-height:100vh;padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+main{max-width:460px;margin:0 auto;padding:16px}
+h1{margin:8px 0 12px;font-size:2rem;color:var(--green);letter-spacing:-.02em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:12px}
+label{display:block;font-size:.85rem;color:var(--mute);margin:10px 0 4px}
+input{width:100%;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font:inherit}
+button{font:inherit;cursor:pointer}
+.btn{width:100%;margin-top:12px;padding:13px;border:0;border-radius:10px;background:var(--green);color:#fff;font-weight:700;border-bottom:4px solid var(--gold)}
+.btn.sec{background:none;color:var(--green);border:1px solid var(--green)}
+.btn:disabled{opacity:.5}
+:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+.top button{background:none;border:0;color:var(--mute);text-decoration:underline}
+#qr{background:#fff;padding:14px;border-radius:10px;width:fit-content;margin:8px auto}
+#jam{text-align:center;font-size:2.6rem;font-weight:800;font-variant-numeric:tabular-nums;color:var(--green)}
+.c{text-align:center;color:var(--mute);font-size:.9rem;margin:4px 0}
+.msg{min-height:1.2em;margin-top:8px;font-size:.9rem;color:var(--err)}
+.msg.ok{color:var(--ok)}
+#ban{padding:14px;border-radius:10px;background:var(--warn);color:#fff;font-weight:600;margin-bottom:12px}
+.st{display:flex;justify-content:space-between;gap:8px;padding:6px 0;font-size:.9rem}
+.st span:last-child{color:var(--mute);text-align:right}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+<section id="vLogin">
+  <h1>Aplikasi Siswa</h1>
+  <div class="card">
+    <label for="nis">NIS</label><input id="nis" inputmode="numeric" autocomplete="username">
+    <label for="pin">PIN akses</label><input id="pin" type="password" autocomplete="current-password">
+    <button class="btn" id="btnLogin" type="button">Masuk</button>
+    <div class="msg" id="msgLogin" role="alert"></div>
+  </div>
+  <p class="c">Masuk sekali dengan internet. Setelah itu QR tetap muncul tanpa kuota.</p>
+</section>
+
+<section id="vApp" hidden>
+  <div class="top"><div><strong id="nm"></strong><div class="c" id="info" style="text-align:left"></div></div><button id="btnKeluar" type="button">Keluar akun</button></div>
+  <div id="ban" role="alert" hidden></div>
+  <div class="card" style="margin-top:12px"><div id="qr"></div><div id="jam">--:--:--</div>
+    <p class="c">Tunjukkan QR ini ke guru saat pelajaran dimulai dan selesai. QR berlaku 60 detik.</p></div>
+  <div class="card">
+    <div class="st"><span>Notifikasi</span><span id="sNotif">-</span></div>
+    <div class="st"><span>Lokasi</span><span id="sLok">-</span></div>
+    <div class="st"><span>Laporan menunggu kirim</span><span id="sQ">0</span></div>
+    <button class="btn sec" id="btnIzin" type="button">Aktifkan notifikasi dan lokasi</button>
+    <p class="c" style="text-align:left">Pemantauan berjalan hanya saat aplikasi ini terbuka. Peringatan istirahat muncul pukul 22.00 sampai 04.30 WIB, dan lokasi dicek pada jam sekolah.</p>
+  </div>
+</section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+const API_URL='https://script.google.com/macros/s/AKfycbwmPW04DDR6oNi6DqBQvdh9Br0ofdwj36iGr-qBUbY2bYxUOLuYG3wXwX6RSvlZ3twYbw/exec';
+/* Samakan dengan SEKOLAH_LAT dan SEKOLAH_LNG di Code.gs. */
+const SEKOLAH={lat:-7.397150,lng:109.692450,radius:150};
+const TZ='Asia/Jakarta',COOLDOWN=30*60*1000,$=id=>document.getElementById(id),pad=n=>String(n).padStart(2,'0');
+const ls={get:(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d;}catch(e){return d;}},set:(k,v)=>localStorage.setItem(k,JSON.stringify(v))};
+const fmt=new Intl.DateTimeFormat('en-GB',{timeZone:TZ,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',weekday:'short',hour12:false});
+function wib(){const o={};fmt.formatToParts(Date.now()).forEach(p=>o[p.type]=p.value);if(o.hour==='24')o.hour='00';return o;}
+const b64=s=>btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+async function api(body){
+  let j;
+  try{const r=await fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(body)});j=await r.json();}
+  catch(e){const x=new Error('Tidak ada koneksi internet');x.net=true;throw x;}
+  if(j.status!=='success'&&j.status!=='ok')throw new Error(j.message||'Permintaan ditolak server');
+  return j;
+}
+let P=ls.get('sicoba_siswa',null),qrObj;
+
+/* ---------- Login ---------- */
+$('btnLogin').onclick=async()=>{
+  const nis=$('nis').value.trim(),pin=$('pin').value,m=$('msgLogin');
+  if(!nis||!pin){m.textContent='Isi NIS dan PIN.';return;}
+  $('btnLogin').disabled=true;m.className='msg ok';m.textContent='Memeriksa…';
+  try{const j=await api({action:'login_siswa',nis,pin});P={nis,nama:j.nama,kelas:j.kelas,lat:parseFloat(j.lat_rumah),lng:parseFloat(j.lng_rumah)};ls.set('sicoba_siswa',P);tampil();}
+  catch(e){m.className='msg';m.textContent=e.message;}
+  $('btnLogin').disabled=false;
+};
+$('btnKeluar').onclick=()=>{if(confirm('Keluar dari akun ini?')){localStorage.removeItem('sicoba_siswa');location.reload();}};
+
+/* ---------- QR dinamis (offline) ---------- */
+function tickQR(){
+  const n=wib(),txt=b64(`${P.nama}|${P.nis}|${P.kelas}|${n.day}:${n.month}:${n.year.slice(2)}|${n.hour}:${n.minute}:${n.second}`);
+  if(window.QRCode){if(!qrObj)qrObj=new QRCode($('qr'),{text:txt,width:240,height:240,correctLevel:QRCode.CorrectLevel.M});else qrObj.makeCode(txt);}
+  $('jam').textContent=`${n.hour}:${n.minute}:${n.second}`;
+}
+
+/* ---------- Pemantauan: notifikasi, jam tidur, geofencing ---------- */
+const jarak=(a,b,c,d)=>{const R=6371000,r=x=>x*Math.PI/180,h=Math.sin(r(c-a)/2)**2+Math.cos(r(a))*Math.cos(r(c))*Math.sin(r(d-b)/2)**2;return 2*R*Math.asin(Math.sqrt(h));};
+function posisi(){return new Promise((ok,no)=>navigator.geolocation?navigator.geolocation.getCurrentPosition(p=>ok(p.coords),no,{enableHighAccuracy:true,timeout:15000,maximumAge:60000}):no(new Error('GPS tidak tersedia')));}
+function notif(judul,isi){
+  const b=$('ban');b.textContent=isi;b.hidden=false;
+  if('Notification' in window&&Notification.permission==='granted'){
+    const f=()=>new Notification(judul,{body:isi});
+    if(navigator.serviceWorker)navigator.serviceWorker.getRegistration().then(r=>r?r.showNotification(judul,{body:isi}):f()).catch(f);else f();
+  }
+}
+const QK='sicoba_siswa_q',lastAt={};
+function antri(l){const q=ls.get(QK,[]);q.push(l);ls.set(QK,q);badge();flush();}
+function badge(){$('sQ').textContent=ls.get(QK,[]).length;}
+let fl=false;
+async function flush(){
+  if(fl||!navigator.onLine)return;fl=true;let q=ls.get(QK,[]);
+  while(q.length){try{await api(q[0]);}catch(e){if(e.net)break;}q.shift();ls.set(QK,q);}
+  fl=false;badge();
+}
+function lapor(jenis,koor,ket){
+  if(Date.now()-(lastAt[jenis]||0)<COOLDOWN)return;lastAt[jenis]=Date.now();
+  antri({action:'log_monitoring',client_id:crypto.randomUUID?crypto.randomUUID():Date.now()+'',nis:P.nis,nama:P.nama,jenis_peringatan:jenis,koordinat:koor,keterangan:ket});
+}
+async function cek(){
+  if(document.hidden)return;
+  const n=wib(),mins=+n.hour*60+ +n.minute,jam=`${n.hour}:${n.minute}`;
+  const malam=mins>=1320||mins<=270,sekolah=n.weekday!=='Sun'&&mins>=420&&mins<=930;
+  if(!malam&&!sekolah){$('ban').hidden=true;$('sLok').textContent='Di luar jam pantau';return;}
+  let c=null;
+  try{c=await posisi();$('sLok').textContent='Aktif';}catch(e){$('sLok').textContent='Belum diizinkan';}
+  const koor=c?`${c.latitude.toFixed(6)}, ${c.longitude.toFixed(6)}`:'';
+  if(malam){
+    let ket=`Layar aktif pukul ${jam}`;
+    if(c&&!isNaN(P.lat)){const d=Math.round(jarak(c.latitude,c.longitude,P.lat,P.lng));ket+=d>SEKOLAH.radius?`, di luar rumah (${d} m dari rumah)`:', di rumah';}
+    notif('Peringatan Waktu Istirahat!','Peringatan Waktu Istirahat! Sudah malam, segera matikan smartphone dan istirahat untuk persiapan sekolah besok.');
+    lapor('TIDUR_MALAM_2200',koor,ket);
+  }else if(c){
+    const d=Math.round(jarak(c.latitude,c.longitude,SEKOLAH.lat,SEKOLAH.lng));
+    if(d>SEKOLAH.radius){notif('Di luar area sekolah',`Anda terdeteksi ${d} m dari sekolah pada jam pelajaran.`);lapor('LUAR_AREA_SEKOLAH',koor,`${d} m dari sekolah pukul ${jam}`);}
+    else $('ban').hidden=true;
+  }
+}
+function status(){$('sNotif').textContent=!('Notification' in window)?'Tidak didukung':({granted:'Aktif',denied:'Diblokir',default:'Belum diizinkan'})[Notification.permission];}
+$('btnIzin').onclick=async()=>{
+  if('Notification' in window)await Notification.requestPermission();
+  status();cek();
+};
+
+function tampil(){
+  $('vLogin').hidden=true;$('vApp').hidden=false;
+  $('nm').textContent=P.nama;$('info').textContent=`${P.kelas}, NIS ${P.nis}`;
+  tickQR();setInterval(tickQR,1000);status();badge();flush();
+  cek();setInterval(cek,5*60*1000);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)cek();});
+  addEventListener('online',flush);
+}
+if(P)addEventListener('load',tampil);
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+</body>
+</html>
