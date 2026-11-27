@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Guru – SICOBA</title>
+<meta name="theme-color" content="#0e5a43">
+<link rel="manifest" href="manifest.json">
+<!--
+KONTRAK API (POST JSON, Content-Type text/plain). Respons: {status:"success"|"error", message, ...}
+ login_guru     {niy,pin}  -> {nama, jadwal:[{id_jadwal,hari,jam_ke,waktu_mulai:"HH:mm",waktu_selesai:"HH:mm",kelas,mata_pelajaran}]}
+ daftar_siswa   {token,kelas}  -> {siswa:[{nis,nama}]}
+ simpan_sesi    {niy,id_jadwal,tanggal:"dd-mm-yyyy",mata_pelajaran,kelas,materi_note,waktu_tutup,
+                 siswa:[{nis,nama,status:"HADIR|IZIN|SAKIT|ALPA|BOLOS_JAM_AKHIR",waktu_masuk,waktu_keluar}], client_id}
+-->
+<style>
+:root{--bg:#f2f5f1;--card:#fff;--ink:#12251d;--mute:#56685f;--line:#d5ded8;--green:#0e5a43;--gold:#c9a227;--ok:#1b7f4f;--warn:#9a6a00;--err:#b3261e;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1612;--card:#15231c;--ink:#e6efe9;--mute:#98aca1;--line:#27392f;--green:#36b583}}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);min-height:100vh;padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+main{max-width:620px;margin:0 auto;padding:16px}
+h1{margin:8px 0 4px;font-size:2rem;color:var(--green);letter-spacing:-.02em}
+h2{font-size:1.1rem;margin:20px 0 8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:12px}
+label{display:block;font-size:.85rem;color:var(--mute);margin:10px 0 4px}
+input,select,textarea{width:100%;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font:inherit}
+button{font:inherit;cursor:pointer}
+.btn{width:100%;margin-top:14px;padding:14px;border:0;border-radius:10px;background:var(--green);color:#fff;font-weight:700;border-bottom:4px solid var(--gold)}
+.btn.sec{background:none;color:var(--green);border:1px solid var(--green)}
+.btn:disabled{opacity:.5}
+:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+.top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.top button{background:none;border:0;color:var(--mute);text-decoration:underline}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}
+.tabs button{padding:12px;border:2px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);font-weight:700}
+.tabs button[aria-selected=true]{background:var(--green);border-color:var(--green);color:#fff}
+#qr{background:#fff;padding:14px;border-radius:10px;width:fit-content;margin:8px auto}
+#jamQ{text-align:center;font-size:2.6rem;font-weight:800;font-variant-numeric:tabular-nums;color:var(--green)}
+.c{text-align:center;color:var(--mute);font-size:.9rem}
+.msg{min-height:1.2em;margin-top:8px;font-size:.9rem;color:var(--err)}
+.msg.ok{color:var(--ok)}
+.jd{display:block;width:100%;text-align:left;padding:12px;margin-bottom:8px;border:1px solid var(--line);border-left:5px solid var(--ok);border-radius:8px;background:var(--card);color:var(--ink)}
+.jd:disabled{border-left-color:var(--line);opacity:.6}
+.jd small{display:block;color:var(--mute)}
+#reader{background:#000;border-radius:10px;overflow:hidden}
+.sw{display:grid;grid-template-columns:1fr 8.5rem;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);font-size:.92rem}
+.sw small{display:block;color:var(--mute)}
+.sw select{padding:8px}
+.sw.h b{color:var(--ok)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+<section id="vLogin">
+  <h1>Aplikasi Guru</h1>
+  <p class="c" style="text-align:left">Masuk sekali dengan koneksi internet. Setelah itu QR presensi tetap bisa dibuat tanpa kuota.</p>
+  <div class="card">
+    <label for="niy">NIY</label><input id="niy" inputmode="numeric" autocomplete="username">
+    <label for="pin">PIN akses</label><input id="pin" type="password" autocomplete="current-password">
+    <button class="btn" id="btnLogin" type="button">Masuk</button>
+    <div class="msg" id="msgLogin" role="alert"></div>
+  </div>
+</section>
+
+<section id="vApp" hidden>
+  <div class="top"><div><strong id="nm"></strong><div class="c" id="niyTxt" style="text-align:left"></div></div><button id="btnKeluar" type="button">Keluar akun</button></div>
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tQR" aria-selected="true">QR presensi saya</button>
+    <button role="tab" id="tKelas" aria-selected="false">Kelas hari ini</button>
+  </div>
+
+  <div id="pQR">
+    <div class="card"><div id="qr"></div><div id="jamQ">--:--:--</div><p class="c" id="tglQ"></p>
+    <p class="c">Tunjukkan ke mesin presensi. QR berubah tiap detik dan berlaku 60 detik.</p></div>
+  </div>
+
+  <div id="pKelas" hidden>
+    <div id="daftar"></div>
+    <button class="btn sec" id="btnMuat" type="button">Muat ulang jadwal</button>
+    <div class="msg" id="msgJ" role="alert"></div>
+
+    <div id="sesi" hidden>
+      <div class="card"><strong id="sInfo"></strong><div class="c" id="sSub" style="text-align:left"></div></div>
+      <div id="reader"></div>
+      <div class="msg" id="msgS" role="status"></div>
+      <h2>Daftar siswa</h2>
+      <div class="card" id="siswa"></div>
+      <h2>Jurnal mengajar</h2>
+      <label for="materi">Catatan materi atau kejadian di kelas</label>
+      <textarea id="materi" rows="4"></textarea>
+      <label style="display:flex;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="cekAkhir" style="width:auto"> Saya memindai ulang siswa di akhir pelajaran</label>
+      <button class="btn" id="btnTutup" type="button">Selesai mengajar dan tutup sesi</button>
+    </div>
+  </div>
+</section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script>
+const API_URL='https://script.google.com/macros/s/AKfycbwmPW04DDR6oNi6DqBQvdh9Br0ofdwj36iGr-qBUbY2bYxUOLuYG3wXwX6RSvlZ3twYbw/exec';
+const TZ='Asia/Jakarta',MAX_DELTA=60,$=id=>document.getElementById(id),pad=n=>String(n).padStart(2,'0');
+const ls={get:(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d;}catch(e){return d;}},set:(k,v)=>localStorage.setItem(k,JSON.stringify(v))};
+const fmt=new Intl.DateTimeFormat('en-GB',{timeZone:TZ,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+const hariFmt=new Intl.DateTimeFormat('id-ID',{timeZone:TZ,weekday:'long'}),tglFmt=new Intl.DateTimeFormat('id-ID',{timeZone:TZ,dateStyle:'full'});
+function wib(ms=Date.now()){const o={};fmt.formatToParts(ms).forEach(p=>o[p.type]=p.value);if(o.hour==='24')o.hour='00';return o;}
+const jamStr=o=>`${o.hour}:${o.minute}:${o.second}`;
+const b64=s=>btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+const unb64=s=>{try{return new TextDecoder().decode(Uint8Array.from(atob(s),c=>c.charCodeAt(0)));}catch(e){return s;}};
+async function api(body){
+  let j;
+  try{const r=await fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(body)});j=await r.json();}
+  catch(e){const x=new Error('Tidak ada koneksi internet');x.net=true;throw x;}
+  if(j.status!=='success'&&j.status!=='ok'){const x=new Error(j.message||'Permintaan ditolak server');x.kode=j.kode;throw x;}
+  return j;
+}
+const setMsg=(el,t,ok)=>{el.textContent=t;el.className='msg'+(ok?' ok':'');};
+
+let P=ls.get('sicoba_guru',null),S=ls.get('sicoba_sesi',null),qrObj,scanner,busy=false;
+
+/* ---------- Login ---------- */
+$('btnLogin').onclick=async()=>{
+  const niy=$('niy').value.trim(),pin=$('pin').value;
+  if(!niy||!pin)return setMsg($('msgLogin'),'Isi NIY dan PIN.');
+  $('btnLogin').disabled=true;setMsg($('msgLogin'),'Memeriksa…',true);
+  try{const j=await api({action:'login_guru',niy,pin});P={niy,nama:j.nama,token:j.token,jadwal:j.jadwal||[]};ls.set('sicoba_guru',P);tampilApp();}
+  catch(e){setMsg($('msgLogin'),e.message);}
+  $('btnLogin').disabled=false;
+};
+$('btnKeluar').onclick=()=>{if(S&&!confirm('Sesi kelas yang belum ditutup akan hilang. Keluar?'))return;localStorage.removeItem('sicoba_guru');localStorage.removeItem('sicoba_sesi');location.reload();};
+
+/* ---------- QR presensi guru (offline) ---------- */
+function tickQR(){
+  const n=wib(),txt=b64(`${P.niy}|${P.nama}|${n.day}:${n.month}:${n.year.slice(2)}|${jamStr(n)}`);
+  if(window.QRCode){if(!qrObj)qrObj=new QRCode($('qr'),{text:txt,width:240,height:240,correctLevel:QRCode.CorrectLevel.M});else qrObj.makeCode(txt);}
+  $('jamQ').textContent=jamStr(n);$('tglQ').textContent=tglFmt.format(Date.now());
+}
+
+/* ---------- Jadwal ---------- */
+const mnt=t=>{const [h,m]=String(t).split(':').map(Number);return h*60+m;};
+function renderJadwal(){
+  const n=wib(),hari=hariFmt.format(Date.now()),mins=+n.hour*60+ +n.minute;
+  const list=(P.jadwal||[]).filter(j=>j.hari===hari).sort((a,b)=>mnt(a.waktu_mulai)-mnt(b.waktu_mulai));
+  $('daftar').replaceChildren(...(list.length?list.map(j=>{
+    const aktif=mins>=mnt(j.waktu_mulai)&&mins<=mnt(j.waktu_selesai);
+    const b=document.createElement('button');b.className='jd';b.disabled=!aktif||!!S;
+    const t=document.createElement('strong');t.textContent=`${j.mata_pelajaran}, ${j.kelas}`;
+    const s=document.createElement('small');s.textContent=`${j.waktu_mulai}–${j.waktu_selesai}, jam ke-${j.jam_ke}`+(aktif?'':' (belum atau sudah lewat)');
+    b.append(t,s);b.onclick=()=>bukaSesi(j);return b;
+  }):[Object.assign(document.createElement('p'),{className:'c',textContent:`Tidak ada jadwal mengajar hari ${hari}.`})]));
+}
+$('btnMuat').onclick=async()=>{
+  try{const j=await api({action:'login_guru',niy:P.niy,pin:prompt('Masukkan PIN untuk memuat ulang jadwal')||''});P.jadwal=j.jadwal||[];P.token=j.token;ls.set('sicoba_guru',P);renderJadwal();setMsg($('msgJ'),'Jadwal diperbarui.',true);}
+  catch(e){setMsg($('msgJ'),e.message);}
+};
+
+/* ---------- Sesi kelas ---------- */
+async function bukaSesi(j){
+  setMsg($('msgJ'),'Memuat daftar siswa…',true);
+  let siswa;
+  try{siswa=(await api({action:'daftar_siswa',token:P.token,kelas:j.kelas})).siswa;ls.set('sicoba_kelas_'+j.kelas,siswa);}
+  catch(e){siswa=ls.get('sicoba_kelas_'+j.kelas,null);if(!siswa)return setMsg($('msgJ'),e.kode==='auth'?'Sesi login berakhir. Keluar akun lalu masuk lagi.':'Daftar siswa belum tersimpan. Hubungkan ke WiFi sekolah.');}
+  const n=wib();
+  S={id_jadwal:j.id_jadwal,kelas:j.kelas,mapel:j.mata_pelajaran,tanggal:`${n.day}-${n.month}-${n.year}`,siswa:siswa.map(s=>({nis:String(s.nis),nama:s.nama,status:'ALPA',masuk:'',keluar:''}))};
+  ls.set('sicoba_sesi',S);setMsg($('msgJ'),'');tampilSesi();
+}
+function tampilSesi(){
+  $('daftar').hidden=$('btnMuat').hidden=true;$('sesi').hidden=false;
+  $('sInfo').textContent=`${S.mapel}, ${S.kelas}`;
+  renderSiswa();mulaiScan();
+}
+function renderSiswa(){
+  const h=S.siswa.filter(s=>s.status==='HADIR').length;
+  $('sSub').textContent=`Hadir ${h} dari ${S.siswa.length} siswa`;
+  $('siswa').replaceChildren(...S.siswa.map((s,i)=>{
+    const r=document.createElement('div');r.className='sw'+(s.status==='HADIR'?' h':'');
+    const d=document.createElement('div'),b=document.createElement('b'),m=document.createElement('small');
+    b.textContent=s.nama;m.textContent=s.nis+(s.masuk?`, masuk ${s.masuk}`:'')+(s.keluar?`, keluar ${s.keluar}`:'');d.append(b,m);
+    const sel=document.createElement('select');sel.setAttribute('aria-label','Status '+s.nama);
+    ['HADIR','IZIN','SAKIT','ALPA'].forEach(v=>sel.add(new Option(v==='ALPA'?'Belum / Alpa':v[0]+v.slice(1).toLowerCase(),v)));
+    sel.value=s.status==='BOLOS_JAM_AKHIR'?'HADIR':s.status;
+    sel.onchange=()=>{s.status=sel.value;ls.set('sicoba_sesi',S);renderSiswa();};
+    r.append(d,sel);return r;
+  }));
+}
+function mulaiScan(){
+  if(!window.Html5Qrcode)return setMsg($('msgS'),'Pemindai belum termuat. Periksa koneksi lalu muat ulang.');
+  scanner=scanner||new Html5Qrcode('reader',{formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE],verbose:false});
+  scanner.start({facingMode:'environment'},{fps:10,qrbox:(w,h)=>{const m=Math.floor(Math.min(w,h)*.7);return{width:m,height:m};}},onScan,()=>{}).catch(e=>setMsg($('msgS'),'Kamera tidak dapat dibuka: '+(e.message||e)));
+}
+function onScan(text){
+  if(busy)return;busy=true;setTimeout(()=>busy=false,1500);
+  const p=unb64(text.trim()).split('|');
+  if(p.length!==5)return setMsg($('msgS'),'QR bukan QR siswa SICOBA.');
+  const [nama,nis,kelas,tgl,jam]=p,t=tgl.split(':').map(Number),j=jam.split(':').map(Number),n=wib();
+  if([...t,...j].some(isNaN))return setMsg($('msgS'),'Format QR tidak valid.');
+  const delta=Math.round(Math.abs(Date.now()-(Date.UTC(2000+t[2],t[1]-1,t[0],j[0],j[1],j[2])-7*36e5))/1000);
+  if(delta>MAX_DELTA)return setMsg($('msgS'),`QR ${nama} kedaluwarsa (selisih ${delta} detik). Minta siswa menyegarkan QR.`);
+  const s=S.siswa.find(x=>x.nis===nis);
+  if(!s||kelas!==S.kelas)return setMsg($('msgS'),`${nama} bukan siswa kelas ${S.kelas}.`);
+  const w=jamStr(n);
+  if(s.status!=='HADIR'||!s.masuk){s.status='HADIR';s.masuk=w;setMsg($('msgS'),`${s.nama}: hadir pukul ${w}`,true);}
+  else{s.keluar=w;setMsg($('msgS'),`${s.nama}: selesai pelajaran pukul ${w}`,true);}
+  if(navigator.vibrate)navigator.vibrate(80);
+  ls.set('sicoba_sesi',S);renderSiswa();
+}
+$('btnTutup').onclick=async()=>{
+  if(!confirm('Tutup sesi dan kirim rekap presensi serta jurnal?'))return;
+  const cek=$('cekAkhir').checked,n=wib();
+  const data={action:'simpan_sesi',token:P.token,client_id:crypto.randomUUID?crypto.randomUUID():Date.now()+'',niy:P.niy,id_jadwal:S.id_jadwal,tanggal:S.tanggal,mata_pelajaran:S.mapel,kelas:S.kelas,materi_note:$('materi').value.trim(),waktu_tutup:jamStr(n),
+    siswa:S.siswa.map(s=>({nis:s.nis,nama:s.nama,status:cek&&s.status==='HADIR'&&!s.keluar?'BOLOS_JAM_AKHIR':s.status,waktu_masuk:s.masuk,waktu_keluar:s.keluar}))};
+  try{scanner&&scanner.isScanning&&await scanner.stop();}catch(e){}
+  try{await api(data);setMsg($('msgJ'),'Sesi ditutup dan data terkirim.',true);}
+  catch(e){if(e.net||e.kode==='auth'){const q=ls.get('sicoba_guru_q',[]);q.push(data);ls.set('sicoba_guru_q',q);setMsg($('msgJ'),e.kode==='auth'?'Sesi login berakhir. Data tersimpan; keluar akun, masuk lagi, lalu sambungkan internet.':'Sesi ditutup. Data tersimpan dan dikirim saat online.',true);}
+    else{setMsg($('msgJ'),'Gagal: '+e.message);mulaiScan();return;}}
+  S=null;localStorage.removeItem('sicoba_sesi');$('materi').value='';$('sesi').hidden=true;$('daftar').hidden=$('btnMuat').hidden=false;renderJadwal();
+};
+async function flush(){
+  if(!navigator.onLine)return;let q=ls.get('sicoba_guru_q',[]);
+  while(q.length){q[0].token=P.token;try{await api(q[0]);}catch(e){if(e.net||e.kode==='auth')break;}q.shift();ls.set('sicoba_guru_q',q);}
+}
+
+/* ---------- Tampilan ---------- */
+function tab(k){$('pQR').hidden=k!=='qr';$('pKelas').hidden=k!=='kelas';$('tQR').setAttribute('aria-selected',k==='qr');$('tKelas').setAttribute('aria-selected',k==='kelas');if(k==='kelas')renderJadwal();}
+$('tQR').onclick=()=>tab('qr');$('tKelas').onclick=()=>tab('kelas');
+function tampilApp(){
+  $('vLogin').hidden=true;$('vApp').hidden=false;$('nm').textContent=P.nama;$('niyTxt').textContent='NIY '+P.niy;
+  tickQR();setInterval(tickQR,1000);renderJadwal();setInterval(()=>{if(!S)renderJadwal();},30000);
+  if(S){tab('kelas');tampilSesi();}
+  flush();addEventListener('online',flush);
+}
+if(P)addEventListener('load',tampilApp);
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+</body>
+</html>
